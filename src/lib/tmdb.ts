@@ -8,7 +8,7 @@ import {
   scoreCandidate,
 } from "./similarity";
 import type { ClassifiedCluster } from "./similarity";
-import { getOrBuildFeature, buildDimensionMappings, backfillFeatures, attrsFromRow } from "./features";
+import { buildDimensionMappings, backfillFeatures, attrsFromRow } from "./features";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
@@ -422,13 +422,22 @@ export async function getNextMovie(
   const clusterData = await getOrRebuildClusters(likedTmdbIds);
 
   if (clusterData) {
-    // Cluster-aware scoring
+    // Cluster-aware scoring — use genre/rating/decade from TMDBMovie data
+    // we already have, avoiding extra TMDB API calls per candidate
     for (const candidate of candidateMap.values()) {
       const m = candidate.movie;
       let score = 0;
 
-      // Build feature vector for candidate
-      const attrs = await getOrBuildFeature(m.id);
+      const attrs = {
+        genres: m.genre_ids ?? [],
+        keywords: [] as number[],
+        castIds: [] as number[],
+        directorIds: [] as number[],
+        decade: m.release_date
+          ? Math.floor(parseInt(m.release_date.slice(0, 4)) / 10) * 10
+          : 2000,
+        rating: m.vote_average ?? 0,
+      };
       const candidateVec = buildFeatureVector(attrs, clusterData.dimensionMappings);
 
       // Cluster affinity (-8 to +10)
