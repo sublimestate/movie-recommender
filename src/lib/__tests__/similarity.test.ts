@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { cosineSimilarity } from "../similarity";
+import { cosineSimilarity, buildFeatureVector } from "../similarity";
+import type { DimensionMappings, MovieAttributes } from "../similarity";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -23,5 +24,83 @@ describe("cosineSimilarity", () => {
     const b = [1, 0, 0, 0, 0, 1];
     // dot=2, |a|=sqrt(3), |b|=sqrt(2), cos=2/sqrt(6) ≈ 0.8165
     expect(cosineSimilarity(a, b)).toBeCloseTo(0.8165, 3);
+  });
+});
+
+describe("buildFeatureVector", () => {
+  const mappings: DimensionMappings = {
+    genreIds: [28, 18, 35],           // Action, Drama, Comedy
+    keywordIds: [100, 200, 300],
+    castIds: [10, 20],
+    directorIds: [30],
+    decadeMin: 1920,
+    decadeMax: 2030,
+  };
+
+  it("sets genre bits correctly", () => {
+    const attrs: MovieAttributes = {
+      genres: [28, 35],  // Action, Comedy
+      keywords: [],
+      castIds: [],
+      directorIds: [],
+      decade: 2000,
+      rating: 7.0,
+    };
+    const vec = buildFeatureVector(attrs, mappings);
+    // genres: [1, 0, 1], keywords: [0,0,0], cast: [0,0], director: [0], decade, rating
+    expect(vec[0]).toBe(1); // Action
+    expect(vec[1]).toBe(0); // Drama
+    expect(vec[2]).toBe(1); // Comedy
+  });
+
+  it("sets keyword, cast, director bits correctly", () => {
+    const attrs: MovieAttributes = {
+      genres: [],
+      keywords: [200],
+      castIds: [20],
+      directorIds: [30],
+      decade: 2000,
+      rating: 7.0,
+    };
+    const vec = buildFeatureVector(attrs, mappings);
+    // genres: [0,0,0], keywords: [0,1,0], cast: [0,1], director: [1], decade, rating
+    expect(vec[3]).toBe(0);  // keyword 100
+    expect(vec[4]).toBe(1);  // keyword 200
+    expect(vec[5]).toBe(0);  // keyword 300
+    expect(vec[6]).toBe(0);  // cast 10
+    expect(vec[7]).toBe(1);  // cast 20
+    expect(vec[8]).toBe(1);  // director 30
+  });
+
+  it("normalizes decade and rating", () => {
+    const attrs: MovieAttributes = {
+      genres: [],
+      keywords: [],
+      castIds: [],
+      directorIds: [],
+      decade: 1975,
+      rating: 5.0,
+    };
+    const vec = buildFeatureVector(attrs, mappings);
+    const decadeIdx = 3 + 3 + 2 + 1; // after genres(3)+keywords(3)+cast(2)+director(1) = idx 9
+    const ratingIdx = decadeIdx + 1;
+    // decade: (1975 - 1920) / (2030 - 1920) = 55/110 = 0.5
+    expect(vec[decadeIdx]).toBeCloseTo(0.5);
+    // rating: 5.0 / 10.0 = 0.5
+    expect(vec[ratingIdx]).toBeCloseTo(0.5);
+  });
+
+  it("clamps decade outside range", () => {
+    const attrs: MovieAttributes = {
+      genres: [],
+      keywords: [],
+      castIds: [],
+      directorIds: [],
+      decade: 1900,
+      rating: 0,
+    };
+    const vec = buildFeatureVector(attrs, mappings);
+    const decadeIdx = 3 + 3 + 2 + 1;
+    expect(vec[decadeIdx]).toBe(0);
   });
 });
