@@ -1,5 +1,6 @@
+import { prisma } from "./db";
+import { fetchCredits, fetchKeywords, ALL_GENRE_IDS } from "./tmdb";
 import type { MovieAttributes, DimensionMappings } from "./similarity";
-import { ALL_GENRE_IDS } from "./tmdb";
 
 const MAX_KEYWORDS = 50;
 const MAX_CAST = 25;
@@ -37,4 +38,93 @@ export function buildDimensionMappings(
     decadeMin: 1920,
     decadeMax: 2030,
   };
+}
+
+export function attrsFromRow(row: {
+  genres: string;
+  keywords: string;
+  castIds: string;
+  directorIds: string;
+  decade: number;
+  rating: number;
+}): MovieAttributes {
+  return {
+    genres: JSON.parse(row.genres) as number[],
+    keywords: JSON.parse(row.keywords) as number[],
+    castIds: JSON.parse(row.castIds) as number[],
+    directorIds: JSON.parse(row.directorIds) as number[],
+    decade: row.decade,
+    rating: row.rating,
+  };
+}
+
+export async function getOrBuildFeature(tmdbId: number): Promise<MovieAttributes> {
+  // Check cache first
+  const cached = await prisma.movieFeature.findUnique({ where: { tmdbId } });
+  if (cached) return attrsFromRow(cached);
+
+  // Fetch from TMDB
+  const [credits, keywords] = await Promise.all([
+    fetchCredits(tmdbId),
+    fetchKeywords(tmdbId),
+  ]);
+
+  // Fetch movie details for genre IDs and release date
+  const res = await fetch(
+    `https://api.themoviedb.org/3/movie/${tmdbId}`,
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.TMDB_API_KEY}`,
+        Accept: "application/json",
+      },
+      next: { revalidate: 86400 },
+    }
+  );
+
+  let genres: number[] = [];
+  let decade = 2000;
+  let rating = 0;
+
+  if (res.ok) {
+    const data = await res.json();
+    genres = (data.genres ?? []).map((g: { id: number }) => g.id);
+    decade = data.release_date
+      ? Math.floor(parseInt(data.release_date.slice(0, 4)) / 10) * 10
+      : 2000;
+    rating = data.vote_average ?? 0;
+  }
+
+  const attrs: MovieAttributes = {
+    genres,
+    keywords: keywords.map((k) => k.id),
+    castIds: credits.topCast.map((c) => c.id),
+    directorIds: credits.directors.map((d) => d.id),
+    decade,
+    rating,
+  };
+
+  // Cache in database
+  await prisma.movieFeature.upsert({
+    where: { tmdbId },
+    update: {
+      genres: JSON.stringify(attrs.genres),
+      keywords: JSON.stringify(attrs.keywords),
+      castIds: JSON.stringify(attrs.castIds),
+      directorIds: JSON.stringify(attrs.directorIds),
+      decade: attrs.decade,
+      rating: attrs.rating,
+      updatedAt: new Date(),
+    },
+    create: {
+      tmdbId,
+      genres: JSON.stringify(attrs.genres),
+      keywords: JSON.stringify(attrs.keywords),
+      castIds: JSON.stringify(attrs.castIds),
+      directorIds: JSON.stringify(attrs.directorIds),
+      decade: attrs.decade,
+      rating: attrs.rating,
+    },
+  });
+
+  return attrs;
 }
