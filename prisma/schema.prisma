@@ -1,0 +1,43 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Decision {
+  id          Int      @id @default(autoincrement())
+  tmdbId      Int      @unique
+  title       String
+  posterPath  String?
+  releaseYear String?
+  rating      Float?
+  genres      String?
+  overview    String?
+  action      String
+  createdAt   DateTime @default(now())
+}
+
+model MovieFeature {
+  id          Int      @id @default(autoincrement())
+  tmdbId      Int      @unique
+  genres      String   // JSON array of genre IDs
+  keywords    String   // JSON array of keyword IDs
+  castIds     String   // JSON array of top 5 cast person IDs
+  directorIds String   // JSON array of director person IDs
+  decade      Int
+  rating      Float
+  updatedAt   DateTime @default(now())
+}
+
+model ClusterCache {
+  id           Int      @id @default(1)
+  lastBuiltAt  DateTime
+  clusterData  String   // JSON: { dimensionMappings, clusters }
+  backfillDone Boolean  @default(false)
+}
