@@ -128,3 +128,33 @@ export async function getOrBuildFeature(tmdbId: number): Promise<MovieAttributes
 
   return attrs;
 }
+
+export async function backfillFeatures(): Promise<void> {
+  // Find decisions with action "liked" or "skip" that have no MovieFeature row
+  const decisions = await prisma.decision.findMany({
+    where: { action: { in: ["liked", "skip"] } },
+    select: { tmdbId: true },
+  });
+
+  const existingFeatures = await prisma.movieFeature.findMany({
+    select: { tmdbId: true },
+  });
+  const existingSet = new Set(existingFeatures.map((f) => f.tmdbId));
+
+  const missing = decisions
+    .filter((d) => !existingSet.has(d.tmdbId))
+    .map((d) => d.tmdbId);
+
+  if (missing.length === 0) return;
+
+  // Process in batches of 20 with 500ms delay for TMDB rate limiting
+  const BATCH_SIZE = 20;
+  for (let i = 0; i < missing.length; i += BATCH_SIZE) {
+    const batch = missing.slice(i, i + BATCH_SIZE);
+    await Promise.all(batch.map((tmdbId) => getOrBuildFeature(tmdbId)));
+
+    if (i + BATCH_SIZE < missing.length) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+  }
+}
