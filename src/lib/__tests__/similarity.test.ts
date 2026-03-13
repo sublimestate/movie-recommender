@@ -7,7 +7,7 @@ import {
   findDistinguishingTraits,
   scoreCandidate,
 } from "../similarity";
-import type { DimensionMappings, MovieAttributes, Cluster, ClusterClassification, ClassifiedCluster, DistinguishingTraits } from "../similarity";
+import type { DimensionMappings, MovieAttributes, Cluster, ClassifiedCluster } from "../similarity";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {

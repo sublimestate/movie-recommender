@@ -238,7 +238,7 @@ export function clusterMovies(
   threshold: number,
 ): Cluster[] {
   // Initialize: each movie is its own cluster
-  let clusters: Cluster[] = [...vectors.entries()].map(([id, vec]) => ({
+  const clusters: Cluster[] = [...vectors.entries()].map(([id, vec]) => ({
     memberIds: [id],
     centroid: [...vec],
   }));

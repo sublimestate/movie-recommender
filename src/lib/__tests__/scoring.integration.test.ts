@@ -5,9 +5,8 @@ import {
   classifyCluster,
   findDistinguishingTraits,
   scoreCandidate,
-  cosineSimilarity,
 } from "../similarity";
-import type { ClassifiedCluster, MovieAttributes, DimensionMappings } from "../similarity";
+import type { ClassifiedCluster, MovieAttributes } from "../similarity";
 import { buildDimensionMappings } from "../features";
 
 describe("full scoring pipeline", () => {
