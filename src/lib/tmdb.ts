@@ -1,4 +1,14 @@
 import { TMDBMovie, Movie } from "@/types/movie";
+import { prisma } from "./db";
+import {
+  buildFeatureVector,
+  clusterMovies,
+  classifyCluster,
+  findDistinguishingTraits,
+  scoreCandidate,
+} from "./similarity";
+import type { ClassifiedCluster } from "./similarity";
+import { getOrBuildFeature, buildDimensionMappings, backfillFeatures, attrsFromRow } from "./features";
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
 
@@ -265,6 +275,85 @@ interface ScoredCandidate {
   sourceCount: number; // how many liked movies recommended this
 }
 
+const CLUSTER_THRESHOLD = 0.6;
+const COLD_START_THRESHOLD = 5;
+
+interface CachedClusterData {
+  dimensionMappings: import("./similarity").DimensionMappings;
+  classifiedClusters: ClassifiedCluster[];
+}
+
+async function getOrRebuildClusters(
+  likedTmdbIds: number[],
+): Promise<CachedClusterData | null> {
+  if (likedTmdbIds.length < COLD_START_THRESHOLD) return null;
+
+  const cache = await prisma.clusterCache.findUnique({ where: { id: 1 } });
+  const latestDecision = await prisma.decision.findFirst({
+    where: { action: { in: ["liked", "skip"] } },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+
+  if (cache && latestDecision && cache.lastBuiltAt >= latestDecision.createdAt && cache.backfillDone) {
+    try {
+      return JSON.parse(cache.clusterData) as CachedClusterData;
+    } catch {
+      // Corrupted cache — rebuild
+    }
+  }
+
+  await backfillFeatures();
+
+  const decisions = await prisma.decision.findMany({
+    where: { action: { in: ["liked", "skip"] } },
+    select: { tmdbId: true, action: true },
+  });
+
+  const actionMap = new Map(decisions.map((d) => [d.tmdbId, d.action]));
+  const featureRows = await prisma.movieFeature.findMany({
+    where: { tmdbId: { in: decisions.map((d) => d.tmdbId) } },
+  });
+
+  const allAttrs = featureRows.map((row) => attrsFromRow(row));
+  const dimensionMappings = buildDimensionMappings(allAttrs);
+
+  const vectors = new Map<number, number[]>();
+  for (const row of featureRows) {
+    const attrs = attrsFromRow(row);
+    vectors.set(row.tmdbId, buildFeatureVector(attrs, dimensionMappings));
+  }
+
+  const clusters = clusterMovies(vectors, CLUSTER_THRESHOLD);
+
+  const classifiedClusters: ClassifiedCluster[] = clusters.map((cluster) => {
+    const classification = classifyCluster(cluster, actionMap);
+    const traits = classification === "mixed"
+      ? findDistinguishingTraits(cluster, actionMap, vectors)
+      : null;
+    return { cluster, classification, traits };
+  });
+
+  const data: CachedClusterData = { dimensionMappings, classifiedClusters };
+
+  await prisma.clusterCache.upsert({
+    where: { id: 1 },
+    update: {
+      lastBuiltAt: new Date(),
+      clusterData: JSON.stringify(data),
+      backfillDone: true,
+    },
+    create: {
+      id: 1,
+      lastBuiltAt: new Date(),
+      clusterData: JSON.stringify(data),
+      backfillDone: true,
+    },
+  });
+
+  return data;
+}
+
 export async function getNextMovie(
   seenTmdbIds: Set<number>,
   watchedIds: Set<number>,
@@ -285,8 +374,6 @@ export async function getNextMovie(
     return null;
   }
 
-  // Build genre profile from liked movies
-  const likedGenres: number[][] = [];
   // Sample up to 20 liked movies for recommendations (to limit API calls)
   const shuffled = [...likedTmdbIds].sort(() => Math.random() - 0.5);
   const sampleIds = shuffled.slice(0, 20);
@@ -331,48 +418,69 @@ export async function getNextMovie(
     return null;
   }
 
-  // Build genre profile from the sampled liked movies (parallel)
-  await Promise.all(
-    sampleIds.map(async (id) => {
-      const res = await fetch(`${TMDB_BASE}/movie/${id}`, {
-        headers: {
-          Authorization: `Bearer ${process.env.TMDB_API_KEY}`,
-          Accept: "application/json",
-        },
-        next: { revalidate: 86400 },
-      });
-      if (res.ok) {
-        const data = await res.json();
-        likedGenres.push((data.genres ?? []).map((g: { id: number }) => g.id));
-      }
-    })
-  );
-  const genreProfile = buildGenreProfile(likedGenres);
-  const maxGenreCount = Math.max(...genreProfile.values(), 1);
+  // Try cluster-aware scoring
+  const clusterData = await getOrRebuildClusters(likedTmdbIds);
 
-  // Score candidates
-  for (const candidate of candidateMap.values()) {
-    const m = candidate.movie;
-    let score = 0;
+  if (clusterData) {
+    // Cluster-aware scoring
+    for (const candidate of candidateMap.values()) {
+      const m = candidate.movie;
+      let score = 0;
 
-    // Source count: more liked movies recommend this = better (0-15 points)
-    score += Math.min(candidate.sourceCount * 4, 15);
+      // Build feature vector for candidate
+      const attrs = await getOrBuildFeature(m.id);
+      const candidateVec = buildFeatureVector(attrs, clusterData.dimensionMappings);
 
-    // Genre match (0-5 points)
-    let genreScore = 0;
-    for (const gid of m.genre_ids) {
-      genreScore += (genreProfile.get(gid) ?? 0) / maxGenreCount;
+      // Cluster affinity (-8 to +10)
+      score += scoreCandidate(candidateVec, clusterData.classifiedClusters);
+
+      // Source count (0-6, reduced from 15)
+      score += Math.min(candidate.sourceCount * 2, 6);
+
+      // TMDB rating bonus (0-3)
+      if (m.vote_average >= 6.5) score += (m.vote_average - 6.5) * 0.85;
+
+      // Vote count (0-2)
+      if (m.vote_count > 500) score += 1;
+      if (m.vote_count > 2000) score += 1;
+
+      candidate.score = score;
     }
-    score += Math.min(genreScore * 2, 5);
+  } else {
+    // Cold start: use existing genre-based scoring (unchanged)
+    const likedGenres: number[][] = [];
+    await Promise.all(
+      sampleIds.map(async (id) => {
+        const res = await fetch(`${TMDB_BASE}/movie/${id}`, {
+          headers: {
+            Authorization: `Bearer ${process.env.TMDB_API_KEY}`,
+            Accept: "application/json",
+          },
+          next: { revalidate: 86400 },
+        });
+        if (res.ok) {
+          const data = await res.json();
+          likedGenres.push((data.genres ?? []).map((g: { id: number }) => g.id));
+        }
+      })
+    );
+    const genreProfile = buildGenreProfile(likedGenres);
+    const maxGenreCount = Math.max(...genreProfile.values(), 1);
 
-    // TMDB rating bonus (0-3 points) — reward well-rated films
-    if (m.vote_average >= 6.5) score += (m.vote_average - 6.5) * 0.85;
-
-    // Vote count — prefer movies with enough ratings to be trustworthy (0-2 points)
-    if (m.vote_count > 500) score += 1;
-    if (m.vote_count > 2000) score += 1;
-
-    candidate.score = score;
+    for (const candidate of candidateMap.values()) {
+      const m = candidate.movie;
+      let score = 0;
+      score += Math.min(candidate.sourceCount * 4, 15);
+      let genreScore = 0;
+      for (const gid of m.genre_ids) {
+        genreScore += (genreProfile.get(gid) ?? 0) / maxGenreCount;
+      }
+      score += Math.min(genreScore * 2, 5);
+      if (m.vote_average >= 6.5) score += (m.vote_average - 6.5) * 0.85;
+      if (m.vote_count > 500) score += 1;
+      if (m.vote_count > 2000) score += 1;
+      candidate.score = score;
+    }
   }
 
   // Sort by score descending
