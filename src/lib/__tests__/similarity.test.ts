@@ -3,8 +3,10 @@ import {
   cosineSimilarity,
   buildFeatureVector,
   clusterMovies,
+  classifyCluster,
+  findDistinguishingTraits,
 } from "../similarity";
-import type { DimensionMappings, MovieAttributes } from "../similarity";
+import type { DimensionMappings, MovieAttributes, Cluster, ClusterClassification } from "../similarity";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -161,5 +163,68 @@ describe("clusterMovies", () => {
     expect(clusters.length).toBe(1);
     expect(clusters[0].centroid[0]).toBeCloseTo(0.5);
     expect(clusters[0].centroid[1]).toBeCloseTo(0.5);
+  });
+});
+
+describe("classifyCluster", () => {
+  it("classifies pure-like cluster", () => {
+    const actions = new Map<number, string>([[1, "liked"], [2, "liked"]]);
+    const cluster: Cluster = { memberIds: [1, 2], centroid: [1, 0] };
+    expect(classifyCluster(cluster, actions)).toBe("pure-like");
+  });
+
+  it("classifies pure-skip cluster", () => {
+    const actions = new Map<number, string>([[1, "skip"], [2, "skip"]]);
+    const cluster: Cluster = { memberIds: [1, 2], centroid: [1, 0] };
+    expect(classifyCluster(cluster, actions)).toBe("pure-skip");
+  });
+
+  it("classifies mixed cluster", () => {
+    const actions = new Map<number, string>([[1, "liked"], [2, "skip"]]);
+    const cluster: Cluster = { memberIds: [1, 2], centroid: [1, 0] };
+    expect(classifyCluster(cluster, actions)).toBe("mixed");
+  });
+});
+
+describe("findDistinguishingTraits", () => {
+  it("returns indices where liked and skipped centroids diverge", () => {
+    const actions = new Map<number, string>([[1, "liked"], [2, "liked"], [3, "skip"]]);
+    const vectors = new Map<number, number[]>([
+      [1, [1, 0, 1, 0]],
+      [2, [1, 0, 0.8, 0]],
+      [3, [1, 1, 0, 0]],
+    ]);
+    const cluster: Cluster = { memberIds: [1, 2, 3], centroid: [1, 0.33, 0.6, 0] };
+    const traits = findDistinguishingTraits(cluster, actions, vectors);
+    // Liked centroid: [1, 0, 0.9, 0], Skipped centroid: [1, 1, 0, 0]
+    // Dim 1: |0 - 1| = 1.0 (biggest divergence)
+    // Dim 2: |0.9 - 0| = 0.9 (second biggest)
+    // Dim 0: |1 - 1| = 0 (no divergence)
+    // Dim 3: |0 - 0| = 0 (no divergence)
+    expect(traits.traitIndices).toContain(1); // skipped has dim 1 on, liked doesn't
+    expect(traits.traitIndices).toContain(2); // liked has dim 2 on, skipped doesn't
+    expect(traits.traitIndices).not.toContain(0); // both have dim 0 = 1
+    expect(traits.likedCentroid).toEqual([1, 0, 0.9, 0]);
+    expect(traits.skippedCentroid).toEqual([1, 1, 0, 0]);
+  });
+
+  it("returns empty traits when all dimensions have negligible divergence", () => {
+    const actions = new Map<number, string>([[1, "liked"], [2, "skip"]]);
+    const vectors = new Map<number, number[]>([
+      [1, [1, 0.5, 0.5]],
+      [2, [1, 0.55, 0.48]],
+    ]);
+    const cluster: Cluster = { memberIds: [1, 2], centroid: [1, 0.525, 0.49] };
+    const traits = findDistinguishingTraits(cluster, actions, vectors);
+    // All divergences are <= 0.1, so no traits should be identified
+    expect(traits.traitIndices.length).toBe(0);
+  });
+
+  it("returns empty traits for single-member cluster", () => {
+    const actions = new Map<number, string>([[1, "liked"]]);
+    const vectors = new Map<number, number[]>([[1, [1, 0]]]);
+    const cluster: Cluster = { memberIds: [1], centroid: [1, 0] };
+    const traits = findDistinguishingTraits(cluster, actions, vectors);
+    expect(traits.traitIndices).toEqual([]);
   });
 });

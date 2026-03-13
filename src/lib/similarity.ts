@@ -75,6 +75,85 @@ export interface Cluster {
   centroid: number[];
 }
 
+export type ClusterClassification = "pure-like" | "pure-skip" | "mixed";
+
+export interface DistinguishingTraits {
+  traitIndices: number[];      // dimensions with highest divergence
+  likedCentroid: number[];     // centroid of liked movies in this cluster
+  skippedCentroid: number[];   // centroid of skipped movies in this cluster
+}
+
+export function classifyCluster(
+  cluster: Cluster,
+  actions: Map<number, string>,
+): ClusterClassification {
+  let hasLiked = false;
+  let hasSkip = false;
+  for (const id of cluster.memberIds) {
+    const action = actions.get(id);
+    if (action === "liked") hasLiked = true;
+    if (action === "skip") hasSkip = true;
+  }
+  if (hasLiked && hasSkip) return "mixed";
+  if (hasLiked) return "pure-like";
+  return "pure-skip";
+}
+
+export function findDistinguishingTraits(
+  cluster: Cluster,
+  actions: Map<number, string>,
+  vectors: Map<number, number[]>,
+): DistinguishingTraits {
+  const likedVecs: number[][] = [];
+  const skippedVecs: number[][] = [];
+
+  for (const id of cluster.memberIds) {
+    const vec = vectors.get(id);
+    if (!vec) continue;
+    if (actions.get(id) === "liked") likedVecs.push(vec);
+    else if (actions.get(id) === "skip") skippedVecs.push(vec);
+  }
+
+  if (likedVecs.length === 0 || skippedVecs.length === 0) {
+    const dims = vectors.values().next().value?.length ?? 0;
+    return {
+      traitIndices: [],
+      likedCentroid: new Array(dims).fill(0),
+      skippedCentroid: new Array(dims).fill(0),
+    };
+  }
+
+  const dims = likedVecs[0].length;
+  const likedCentroid = new Array(dims).fill(0);
+  const skippedCentroid = new Array(dims).fill(0);
+
+  for (const vec of likedVecs) {
+    for (let i = 0; i < dims; i++) likedCentroid[i] += vec[i] / likedVecs.length;
+  }
+  for (const vec of skippedVecs) {
+    for (let i = 0; i < dims; i++) skippedCentroid[i] += vec[i] / skippedVecs.length;
+  }
+
+  // Find dimensions with largest absolute divergence
+  const divergences = likedCentroid.map((val, i) => ({
+    index: i,
+    diff: Math.abs(val - skippedCentroid[i]),
+  }));
+  divergences.sort((a, b) => b.diff - a.diff);
+
+  // Take top 30% of dimensions (at least 1) with divergence > 0.1
+  // 0.1 threshold: ignores noise-level differences in binary features
+  // 30% cap: prevents overfitting to too many dimensions in sparse vectors
+  const minTraits = 1;
+  const maxTraits = Math.max(minTraits, Math.ceil(dims * 0.3));
+  const traitIndices = divergences
+    .filter((d) => d.diff > 0.1)
+    .slice(0, maxTraits)
+    .map((d) => d.index);
+
+  return { traitIndices, likedCentroid, skippedCentroid };
+}
+
 export function clusterMovies(
   vectors: Map<number, number[]>,
   threshold: number,
