@@ -69,3 +69,56 @@ export function buildFeatureVector(
 
   return vec;
 }
+
+export interface Cluster {
+  memberIds: number[];
+  centroid: number[];
+}
+
+export function clusterMovies(
+  vectors: Map<number, number[]>,
+  threshold: number,
+): Cluster[] {
+  // Initialize: each movie is its own cluster
+  let clusters: Cluster[] = [...vectors.entries()].map(([id, vec]) => ({
+    memberIds: [id],
+    centroid: [...vec],
+  }));
+
+  // Agglomerative: merge most similar pair until no pair exceeds threshold
+  while (clusters.length > 1) {
+    let bestSim = -Infinity;
+    let bestI = -1;
+    let bestJ = -1;
+
+    for (let i = 0; i < clusters.length; i++) {
+      for (let j = i + 1; j < clusters.length; j++) {
+        const sim = cosineSimilarity(clusters[i].centroid, clusters[j].centroid);
+        if (sim > bestSim) {
+          bestSim = sim;
+          bestI = i;
+          bestJ = j;
+        }
+      }
+    }
+
+    if (bestSim < threshold) break;
+
+    // Merge bestJ into bestI
+    const a = clusters[bestI];
+    const b = clusters[bestJ];
+    const totalCount = a.memberIds.length + b.memberIds.length;
+    const mergedCentroid = a.centroid.map(
+      (val, idx) =>
+        (val * a.memberIds.length + b.centroid[idx] * b.memberIds.length) / totalCount,
+    );
+
+    clusters[bestI] = {
+      memberIds: [...a.memberIds, ...b.memberIds],
+      centroid: mergedCentroid,
+    };
+    clusters.splice(bestJ, 1);
+  }
+
+  return clusters;
+}

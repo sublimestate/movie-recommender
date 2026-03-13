@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { cosineSimilarity, buildFeatureVector } from "../similarity";
+import {
+  cosineSimilarity,
+  buildFeatureVector,
+  clusterMovies,
+} from "../similarity";
 import type { DimensionMappings, MovieAttributes } from "../similarity";
 
 describe("cosineSimilarity", () => {
@@ -102,5 +106,60 @@ describe("buildFeatureVector", () => {
     const vec = buildFeatureVector(attrs, mappings);
     const decadeIdx = 3 + 3 + 2 + 1;
     expect(vec[decadeIdx]).toBe(0);
+  });
+});
+
+describe("clusterMovies", () => {
+  it("puts identical vectors in the same cluster", () => {
+    const vectors = new Map<number, number[]>();
+    vectors.set(1, [1, 0, 1, 0]);
+    vectors.set(2, [1, 0, 1, 0]);
+    vectors.set(3, [0, 1, 0, 1]);
+    const clusters = clusterMovies(vectors, 0.6);
+    expect(clusters.length).toBe(2);
+    const clusterWith1 = clusters.find((c) => c.memberIds.includes(1))!;
+    expect(clusterWith1.memberIds).toContain(2);
+    expect(clusterWith1.memberIds).not.toContain(3);
+  });
+
+  it("keeps dissimilar vectors in separate clusters", () => {
+    const vectors = new Map<number, number[]>();
+    vectors.set(1, [1, 0, 0, 0]);
+    vectors.set(2, [0, 1, 0, 0]);
+    vectors.set(3, [0, 0, 1, 0]);
+    const clusters = clusterMovies(vectors, 0.6);
+    expect(clusters.length).toBe(3);
+  });
+
+  it("returns one cluster per movie when threshold is very high", () => {
+    const vectors = new Map<number, number[]>();
+    vectors.set(1, [1, 0.5, 0]);
+    vectors.set(2, [0.9, 0.6, 0]);
+    const clusters = clusterMovies(vectors, 0.999);
+    expect(clusters.length).toBe(2);
+  });
+
+  it("handles single movie", () => {
+    const vectors = new Map<number, number[]>();
+    vectors.set(1, [1, 0, 1]);
+    const clusters = clusterMovies(vectors, 0.6);
+    expect(clusters.length).toBe(1);
+    expect(clusters[0].memberIds).toEqual([1]);
+  });
+
+  it("handles empty input", () => {
+    const vectors = new Map<number, number[]>();
+    const clusters = clusterMovies(vectors, 0.6);
+    expect(clusters.length).toBe(0);
+  });
+
+  it("computes cluster centroid correctly", () => {
+    const vectors = new Map<number, number[]>();
+    vectors.set(1, [1, 0]);
+    vectors.set(2, [0, 1]);
+    const clusters = clusterMovies(vectors, -1);
+    expect(clusters.length).toBe(1);
+    expect(clusters[0].centroid[0]).toBeCloseTo(0.5);
+    expect(clusters[0].centroid[1]).toBeCloseTo(0.5);
   });
 });
