@@ -40,8 +40,13 @@ Stores cluster dirty state persistently (survives server restarts).
 ClusterCache
   id              Int      @id @default(1)
   lastBuiltAt     DateTime
-  clusterData     String   // JSON serialized cluster results
+  clusterData     String   // JSON: { dimensionMappings, clusters (centroids + classification) }
+  backfillDone    Boolean  @default(false)
 ```
+
+All reads/writes to `ClusterCache` use an upsert with `id: 1` (singleton pattern — no seed script needed).
+
+The `clusterData` JSON blob stores **both** the cluster results (centroids, classifications, distinguishing traits) **and** the dimension mappings used to compute them. This ensures that scoring candidates between rebuilds uses consistent mappings. When clusters are rebuilt, `clusterData` is fully replaced.
 
 ### Decision-to-Clustering Role Mapping
 
@@ -74,6 +79,10 @@ Dimension mappings (which keywords/cast/directors get their own dimension) are r
 ## New TMDB API Call
 
 `fetchKeywords(movieId)` — hits `GET /movie/{id}/keywords`, returns an array of `{id, name}` keyword objects. Defined in `src/lib/tmdb.ts` (consistent with existing TMDB fetch functions). Called once per movie when building its feature attributes, cached in `MovieFeature`. Revalidate interval: 24 hours.
+
+The existing `fetchCredits` function returns cast names as strings but `MovieFeature.castIds` needs person IDs. `fetchCredits` already extracts `id` fields into `topCast` and `directors` — `features.ts` will use those ID arrays directly. No changes to `fetchCredits` are needed; `getOrBuildFeature` calls it and reads `topCast[].id` and `directors[].id`.
+
+`MovieFeature.updatedAt` exists only as a diagnostic field (when was this row last written). There is no TTL or refresh policy — once attributes are cached, they persist indefinitely. Keywords, cast, and directors rarely change for released movies.
 
 ## Migration & Backfill
 
@@ -146,7 +155,7 @@ For each candidate movie:
 4. Per-cluster scoring by type:
    - **Pure-like cluster**: `clusterScore = +10 * similarity`
    - **Pure-skip cluster**: `clusterScore = -8 * similarity` (asymmetric to avoid over-penalizing accidental skips — skipping is a weaker signal than liking)
-   - **Mixed cluster**: Project the candidate's feature vector onto the distinguishing trait dimensions. Compute dot product with the liked-centroid direction and skipped-centroid direction. If it aligns with the liked side: `clusterScore = +10 * similarity * alignment`. If skipped side: `clusterScore = -8 * similarity * alignment`.
+   - **Mixed cluster**: Extract the distinguishing trait dimensions from the candidate vector, the liked centroid, and the skipped centroid. Compute `likedDot = cosineSimilarity(candidateTraits, likedCentroidTraits)` and `skipDot = cosineSimilarity(candidateTraits, skipCentroidTraits)`. Normalize alignment: `alignment = (likedDot - skipDot) / (|likedDot| + |skipDot| + epsilon)`, producing a value in [-1, +1]. If alignment > 0: `clusterScore = +10 * similarity * alignment`. If alignment < 0: `clusterScore = -8 * similarity * |alignment|`.
 
 If only one cluster exists, no blending — use that cluster's score directly.
 
