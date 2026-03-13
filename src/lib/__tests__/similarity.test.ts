@@ -5,8 +5,9 @@ import {
   clusterMovies,
   classifyCluster,
   findDistinguishingTraits,
+  scoreCandidate,
 } from "../similarity";
-import type { DimensionMappings, MovieAttributes, Cluster, ClusterClassification } from "../similarity";
+import type { DimensionMappings, MovieAttributes, Cluster, ClusterClassification, ClassifiedCluster, DistinguishingTraits } from "../similarity";
 
 describe("cosineSimilarity", () => {
   it("returns 1 for identical vectors", () => {
@@ -226,5 +227,68 @@ describe("findDistinguishingTraits", () => {
     const cluster: Cluster = { memberIds: [1], centroid: [1, 0] };
     const traits = findDistinguishingTraits(cluster, actions, vectors);
     expect(traits.traitIndices).toEqual([]);
+  });
+});
+
+describe("scoreCandidate", () => {
+  it("boosts candidates similar to pure-like clusters", () => {
+    const clusters: ClassifiedCluster[] = [{
+      cluster: { memberIds: [1], centroid: [1, 0, 1, 0] },
+      classification: "pure-like",
+      traits: null,
+    }];
+    const score = scoreCandidate([1, 0, 1, 0], clusters);
+    expect(score).toBeGreaterThan(0);
+    expect(score).toBeLessThanOrEqual(10);
+  });
+
+  it("penalizes candidates similar to pure-skip clusters", () => {
+    const clusters: ClassifiedCluster[] = [{
+      cluster: { memberIds: [1], centroid: [1, 0, 1, 0] },
+      classification: "pure-skip",
+      traits: null,
+    }];
+    const score = scoreCandidate([1, 0, 1, 0], clusters);
+    expect(score).toBeLessThan(0);
+    expect(score).toBeGreaterThanOrEqual(-8);
+  });
+
+  it("blends scores from two closest clusters", () => {
+    const clusters: ClassifiedCluster[] = [
+      {
+        cluster: { memberIds: [1], centroid: [1, 0, 0] },
+        classification: "pure-like",
+        traits: null,
+      },
+      {
+        cluster: { memberIds: [2], centroid: [0, 1, 0] },
+        classification: "pure-skip",
+        traits: null,
+      },
+    ];
+    const score = scoreCandidate([0.7, 0.7, 0], clusters);
+    expect(score).toBeGreaterThan(-8);
+    expect(score).toBeLessThan(10);
+  });
+
+  it("handles mixed cluster with trait alignment", () => {
+    const likedCentroid = [1, 0, 1, 0];
+    const skippedCentroid = [1, 0, 0, 1];
+    const clusters: ClassifiedCluster[] = [{
+      cluster: { memberIds: [1, 2], centroid: [1, 0, 0.5, 0.5] },
+      classification: "mixed",
+      traits: {
+        traitIndices: [2, 3],
+        likedCentroid,
+        skippedCentroid,
+      },
+    }];
+    const likedScore = scoreCandidate([1, 0, 1, 0], clusters);
+    const skipScore = scoreCandidate([1, 0, 0, 1], clusters);
+    expect(likedScore).toBeGreaterThan(skipScore);
+  });
+
+  it("returns 0 for empty clusters", () => {
+    expect(scoreCandidate([1, 0], [])).toBe(0);
   });
 });

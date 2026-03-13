@@ -154,6 +154,85 @@ export function findDistinguishingTraits(
   return { traitIndices, likedCentroid, skippedCentroid };
 }
 
+export interface ClassifiedCluster {
+  cluster: Cluster;
+  classification: ClusterClassification;
+  traits: DistinguishingTraits | null; // non-null for "mixed"
+}
+
+export function scoreCandidate(
+  candidateVec: number[],
+  classifiedClusters: ClassifiedCluster[],
+): number {
+  if (classifiedClusters.length === 0) return 0;
+
+  // Compute similarity to each cluster
+  const scored = classifiedClusters.map((cc) => ({
+    cc,
+    sim: cosineSimilarity(candidateVec, cc.cluster.centroid),
+  }));
+
+  // Sort by similarity descending, take top 2
+  scored.sort((a, b) => b.sim - a.sim);
+  const top = scored.slice(0, 2);
+
+  if (top.length === 1) {
+    return computeClusterScore(candidateVec, top[0].cc, top[0].sim);
+  }
+
+  // Blended score: weighted average by absolute similarity
+  // Using abs because anti-correlation is still a meaningful relationship
+  const w1 = Math.abs(top[0].sim);
+  const w2 = Math.abs(top[1].sim);
+  const totalW = w1 + w2;
+  if (totalW === 0) return 0;
+
+  const score1 = computeClusterScore(candidateVec, top[0].cc, top[0].sim);
+  const score2 = computeClusterScore(candidateVec, top[1].cc, top[1].sim);
+
+  return (w1 * score1 + w2 * score2) / totalW;
+}
+
+function computeClusterScore(
+  candidateVec: number[],
+  cc: ClassifiedCluster,
+  similarity: number,
+): number {
+  // Don't clamp similarity — negative cosine similarity (anti-correlation)
+  // is a useful signal: anti-correlated to a skip cluster = positive boost
+  if (cc.classification === "pure-like") {
+    return 10 * similarity;
+  }
+
+  if (cc.classification === "pure-skip") {
+    return -8 * similarity;
+  }
+
+  // Mixed cluster — use distinguishing traits
+  if (!cc.traits || cc.traits.traitIndices.length === 0) {
+    return 0;
+  }
+
+  const { traitIndices, likedCentroid, skippedCentroid } = cc.traits;
+
+  // Extract trait dimensions
+  const candidateTraits = traitIndices.map((i) => candidateVec[i]);
+  const likedTraits = traitIndices.map((i) => likedCentroid[i]);
+  const skippedTraits = traitIndices.map((i) => skippedCentroid[i]);
+
+  const likedDot = cosineSimilarity(candidateTraits, likedTraits);
+  const skipDot = cosineSimilarity(candidateTraits, skippedTraits);
+
+  const epsilon = 1e-8;
+  const alignment = (likedDot - skipDot) / (Math.abs(likedDot) + Math.abs(skipDot) + epsilon);
+
+  if (alignment > 0) {
+    return 10 * similarity * alignment;
+  } else {
+    return -8 * similarity * Math.abs(alignment);
+  }
+}
+
 export function clusterMovies(
   vectors: Map<number, number[]>,
   threshold: number,
