@@ -70,28 +70,32 @@ export async function getOrBuildFeature(tmdbId: number): Promise<MovieAttributes
   ]);
 
   // Fetch movie details for genre IDs and release date
-  const res = await fetch(
-    `https://api.themoviedb.org/3/movie/${tmdbId}`,
-    {
-      headers: {
-        Authorization: `Bearer ${process.env.TMDB_API_KEY}`,
-        Accept: "application/json",
-      },
-      next: { revalidate: 86400 },
-    }
-  );
-
   let genres: number[] = [];
   let decade = 2000;
   let rating = 0;
 
-  if (res.ok) {
-    const data = await res.json();
-    genres = (data.genres ?? []).map((g: { id: number }) => g.id);
-    decade = data.release_date
-      ? Math.floor(parseInt(data.release_date.slice(0, 4)) / 10) * 10
-      : 2000;
-    rating = data.vote_average ?? 0;
+  try {
+    const res = await fetch(
+      `https://api.themoviedb.org/3/movie/${tmdbId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${process.env.TMDB_API_KEY}`,
+          Accept: "application/json",
+        },
+        next: { revalidate: 86400 },
+      }
+    );
+
+    if (res.ok) {
+      const data = await res.json();
+      genres = (data.genres ?? []).map((g: { id: number }) => g.id);
+      decade = data.release_date
+        ? Math.floor(parseInt(data.release_date.slice(0, 4)) / 10) * 10
+        : 2000;
+      rating = data.vote_average ?? 0;
+    }
+  } catch {
+    // Network failure — proceed with empty defaults per spec
   }
 
   const attrs: MovieAttributes = {
@@ -147,14 +151,15 @@ export async function backfillFeatures(): Promise<void> {
 
   if (missing.length === 0) return;
 
-  // Process in batches of 20 with 500ms delay for TMDB rate limiting
-  const BATCH_SIZE = 20;
+  // Process in batches of 10 with 1500ms delay for TMDB rate limiting
+  // Each movie makes ~3 TMDB calls, so batch of 10 = ~30 requests
+  const BATCH_SIZE = 10;
   for (let i = 0; i < missing.length; i += BATCH_SIZE) {
     const batch = missing.slice(i, i + BATCH_SIZE);
     await Promise.all(batch.map((tmdbId) => getOrBuildFeature(tmdbId)));
 
     if (i + BATCH_SIZE < missing.length) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, 1500));
     }
   }
 }
