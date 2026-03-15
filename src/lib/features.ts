@@ -136,7 +136,7 @@ export async function getOrBuildFeature(tmdbId: number): Promise<MovieAttributes
 export async function backfillFeatures(): Promise<void> {
   // Find decisions with action "liked" or "skip" that have no MovieFeature row
   const decisions = await prisma.decision.findMany({
-    where: { action: { in: ["liked", "skip"] } },
+    where: { action: { in: ["liked", "skip", "disliked"] } },
     select: { tmdbId: true },
   });
 

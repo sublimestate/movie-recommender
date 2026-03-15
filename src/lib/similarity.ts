@@ -92,7 +92,7 @@ export function classifyCluster(
   for (const id of cluster.memberIds) {
     const action = actions.get(id);
     if (action === "liked") hasLiked = true;
-    if (action === "skip") hasSkip = true;
+    if (action === "skip" || action === "disliked") hasSkip = true;
   }
   if (hasLiked && hasSkip) return "mixed";
   if (hasLiked) return "pure-like";
@@ -104,14 +104,16 @@ export function findDistinguishingTraits(
   actions: Map<number, string>,
   vectors: Map<number, number[]>,
 ): DistinguishingTraits {
-  const likedVecs: number[][] = [];
-  const skippedVecs: number[][] = [];
+  const likedVecs: { vec: number[]; weight: number }[] = [];
+  const skippedVecs: { vec: number[]; weight: number }[] = [];
 
   for (const id of cluster.memberIds) {
     const vec = vectors.get(id);
     if (!vec) continue;
-    if (actions.get(id) === "liked") likedVecs.push(vec);
-    else if (actions.get(id) === "skip") skippedVecs.push(vec);
+    const action = actions.get(id);
+    if (action === "liked") likedVecs.push({ vec, weight: 1.0 });
+    else if (action === "disliked") skippedVecs.push({ vec, weight: 1.0 });
+    else if (action === "skip") skippedVecs.push({ vec, weight: 0.5 });
   }
 
   if (likedVecs.length === 0 || skippedVecs.length === 0) {
@@ -123,15 +125,17 @@ export function findDistinguishingTraits(
     };
   }
 
-  const dims = likedVecs[0].length;
+  const dims = likedVecs[0].vec.length;
   const likedCentroid = new Array(dims).fill(0);
   const skippedCentroid = new Array(dims).fill(0);
 
-  for (const vec of likedVecs) {
-    for (let i = 0; i < dims; i++) likedCentroid[i] += vec[i] / likedVecs.length;
+  const likedTotalWeight = likedVecs.reduce((s, v) => s + v.weight, 0);
+  for (const { vec, weight } of likedVecs) {
+    for (let i = 0; i < dims; i++) likedCentroid[i] += vec[i] * weight / likedTotalWeight;
   }
-  for (const vec of skippedVecs) {
-    for (let i = 0; i < dims; i++) skippedCentroid[i] += vec[i] / skippedVecs.length;
+  const skippedTotalWeight = skippedVecs.reduce((s, v) => s + v.weight, 0);
+  for (const { vec, weight } of skippedVecs) {
+    for (let i = 0; i < dims; i++) skippedCentroid[i] += vec[i] * weight / skippedTotalWeight;
   }
 
   // Find dimensions with largest absolute divergence
@@ -158,6 +162,7 @@ export interface ClassifiedCluster {
   cluster: Cluster;
   classification: ClusterClassification;
   traits: DistinguishingTraits | null; // non-null for "mixed"
+  skipSeverity: number; // 0.0 = all skips, 1.0 = all dislikes
 }
 
 export function scoreCandidate(
@@ -205,7 +210,8 @@ function computeClusterScore(
   }
 
   if (cc.classification === "pure-skip") {
-    return -8 * similarity;
+    // Mostly skipped: -4 penalty (mild); mostly disliked: -8 penalty (strong)
+    return -(4 + 4 * cc.skipSeverity) * similarity;
   }
 
   // Mixed cluster — use distinguishing traits
