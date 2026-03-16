@@ -14,7 +14,7 @@ async function DiscoverContent() {
     getLikedTmdbIds(),
   ]);
   const watchedIds = new Set(watchedTitles.keys());
-  const movies = await getNextMovies(seenIds, watchedIds, watchedTitles, likedIds, 10);
+  const movies = await getNextMovies(seenIds, watchedIds, watchedTitles, likedIds, 10, true);
 
   if (movies.length === 0) {
     return <EmptyState message="No more movies to discover! Check back later." />;

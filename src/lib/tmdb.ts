@@ -242,23 +242,31 @@ function toMovieLight(m: TMDBMovie): Movie {
   };
 }
 
-async function toMovie(m: TMDBMovie): Promise<Movie> {
+interface MovieWithCredits {
+  movie: Movie;
+  credits: Credits;
+}
+
+async function toMovie(m: TMDBMovie): Promise<MovieWithCredits> {
   const [credits, kws] = await Promise.all([
     fetchCredits(m.id),
     fetchKeywords(m.id),
   ]);
   return {
-    tmdbId: m.id,
-    title: m.title,
-    posterPath: m.poster_path,
-    releaseYear: m.release_date ? m.release_date.slice(0, 4) : null,
-    rating: m.vote_average,
-    genres: JSON.stringify(m.genre_ids.map((id) => GENRE_MAP[id] ?? "Other")),
-    overview: m.overview || null,
-    cast: credits.castNames.length > 0 ? JSON.stringify(credits.castNames) : null,
-    director: credits.directors.length > 0 ? credits.directors.map(d => d.name).join(", ") : null,
-    keywords: kws.length > 0 ? JSON.stringify(kws.slice(0, 8).map(k => k.name)) : null,
-    reasons: null,
+    movie: {
+      tmdbId: m.id,
+      title: m.title,
+      posterPath: m.poster_path,
+      releaseYear: m.release_date ? m.release_date.slice(0, 4) : null,
+      rating: m.vote_average,
+      genres: JSON.stringify(m.genre_ids.map((id) => GENRE_MAP[id] ?? "Other")),
+      overview: m.overview || null,
+      cast: credits.castNames.length > 0 ? JSON.stringify(credits.castNames) : null,
+      director: credits.directors.length > 0 ? credits.directors.map(d => d.name).join(", ") : null,
+      keywords: kws.length > 0 ? JSON.stringify(kws.slice(0, 8).map(k => k.name)) : null,
+      reasons: null,
+    },
+    credits,
   };
 }
 
@@ -801,7 +809,8 @@ export async function getNextMovie(
       const movies = await fetchTrendingMovies(page);
       for (const m of movies) {
         if (!seenTmdbIds.has(m.id) && releasedAfterCutoff(m)) {
-          return toMovie(m);
+          const { movie } = await toMovie(m);
+          return movie;
         }
       }
     }
@@ -817,9 +826,8 @@ export async function getNextMovie(
       const movies = await fetchTrendingMovies(page);
       for (const m of movies) {
         if (!seenTmdbIds.has(m.id) && releasedAfterCutoff(m)) {
-          const movie = await toMovie(m);
+          const { movie, credits } = await toMovie(m);
           if (watchedIds.size > 0) {
-            const credits = await fetchCredits(m.id);
             movie.reasons = await buildReasons(credits, watchedIds, watchedTitles);
           }
           return movie;
@@ -834,10 +842,9 @@ export async function getNextMovie(
   const sorted = [...candidateMap.values()].sort((a, b) => b.score - a.score);
   const topN = sorted.slice(0, Math.min(5, sorted.length));
   const best = topN[Math.floor(Math.random() * topN.length)];
-  const movie = await toMovie(best.movie);
+  const { movie, credits } = await toMovie(best.movie);
 
   if (watchedIds.size > 0) {
-    const credits = await fetchCredits(best.movie.id);
     movie.reasons = await buildReasons(credits, watchedIds, watchedTitles);
   }
 
@@ -859,7 +866,12 @@ export async function getNextMovies(
       for (const m of trending) {
         if (!seenTmdbIds.has(m.id) && releasedAfterCutoff(m)) {
           seenTmdbIds.add(m.id);
-          movies.push(light ? toMovieLight(m) : await toMovie(m));
+          if (light) {
+            movies.push(toMovieLight(m));
+          } else {
+            const { movie } = await toMovie(m);
+            movies.push(movie);
+          }
           if (movies.length >= count) break;
         }
       }
@@ -881,9 +893,8 @@ export async function getNextMovies(
           if (light) {
             movies.push(toMovieLight(m));
           } else {
-            const movie = await toMovie(m);
+            const { movie, credits } = await toMovie(m);
             if (watchedIds.size > 0) {
-              const credits = await fetchCredits(m.id);
               movie.reasons = await buildReasons(credits, watchedIds, watchedTitles);
             }
             movies.push(movie);
@@ -904,9 +915,8 @@ export async function getNextMovies(
     ? selected.map((candidate) => toMovieLight(candidate.movie))
     : await Promise.all(
         selected.map(async (candidate) => {
-          const movie = await toMovie(candidate.movie);
+          const { movie, credits } = await toMovie(candidate.movie);
           if (watchedIds.size > 0) {
-            const credits = await fetchCredits(candidate.movie.id);
             movie.reasons = await buildReasons(credits, watchedIds, watchedTitles);
           }
           return movie;

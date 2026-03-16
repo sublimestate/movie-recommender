@@ -67,8 +67,8 @@ export default function DiscoverFlow({
 
     (async () => {
       try {
-        const bufferIds = movies.slice(currentIndex).map((m) => m.tmdbId);
-        const more = await fetchMoreMovies(bufferIds);
+        const allIds = movies.map((m) => m.tmdbId);
+        const more = await fetchMoreMovies(allIds);
         if (more.length > 0) {
           setMovies((prev) => [...prev, ...more]);
         }
